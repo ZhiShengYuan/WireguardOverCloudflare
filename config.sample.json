@@ -1,0 +1,19 @@
+{
+  "listen_addr": ":8080",
+  "wg_interface": "wg0",
+  "wg_endpoint": "vpn.example.com:51820",
+  "persistent_keepalive_seconds": 0,
+  "json_template_path": "./templates/peer_response.json.tmpl",
+  "trust_proxy_loopback_only": true,
+  "log_level": "info",
+  "use_preshared_key": false,
+  "auth": {
+    "basic": {
+      "username": "admin",
+      "password": "changeme"
+    },
+    "jwt": {
+      "secret": "replace-with-strong-secret"
+    }
+  }
+}

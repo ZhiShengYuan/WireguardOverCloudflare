@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
@@ -31,12 +34,14 @@ type Options struct {
 	ListenAddr             string
 	Interface              string
 	Endpoint               string
-	AuthBearerToken        string
 	TrustProxyLoopbackOnly bool
 	Renderer               *templater.Renderer
 	PeerStore              *peers.Store
 	Manager                WireguardManager
 	UsePresharedKey        bool
+	BasicAuthUsername      string
+	BasicAuthPassword      string
+	JWTSecret              string
 }
 
 // Server wraps the Gin engine and HTTP server.
@@ -66,14 +71,22 @@ func New(opts Options) (*Server, error) {
 		}
 	}
 
+	if opts.BasicAuthUsername == "" || opts.BasicAuthPassword == "" {
+		return nil, errors.New("basic auth credentials are required")
+	}
+	if opts.JWTSecret == "" {
+		return nil, errors.New("jwt secret is required")
+	}
+
 	s := &Server{opts: opts, engine: engine}
 
-	authMiddleware := optionalAuth(opts.AuthBearerToken)
+	basicAuth := requireBasicAuth(opts.BasicAuthUsername, opts.BasicAuthPassword)
+	jwtAuth := requireJWTAuth(opts.JWTSecret)
 
-	engine.GET("/healthz", s.handleHealthz)
-	engine.POST("/peer", authMiddleware, s.handleCreatePeer)
-	engine.DELETE("/peer/:id", authMiddleware, s.handleDeletePeer)
-	engine.POST("/admin/reload-template", authMiddleware, s.handleReloadTemplate)
+	engine.GET("/healthz", basicAuth, s.handleHealthz)
+	engine.POST("/peer", jwtAuth, s.handleCreatePeer)
+	engine.DELETE("/peer/:id", basicAuth, s.handleDeletePeer)
+	engine.POST("/admin/reload-template", basicAuth, s.handleReloadTemplate)
 
 	s.srv = &http.Server{
 		Addr:    opts.ListenAddr,
@@ -244,21 +257,61 @@ type createPeerRequest struct {
 	Note string `json:"note"`
 }
 
-func optionalAuth(token string) gin.HandlerFunc {
-	if token == "" {
-		return func(c *gin.Context) {
-			c.Next()
-		}
-	}
+func requireBasicAuth(username, password string) gin.HandlerFunc {
+	expected := username + ":" + password
 
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
+		const prefix = "Basic "
+		if !strings.HasPrefix(header, prefix) {
+			unauthorizedBasic(c)
+			return
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(header[len(prefix):])
+		if err != nil {
+			unauthorizedBasic(c)
+			return
+		}
+
+		if subtle.ConstantTimeCompare(decoded, []byte(expected)) != 1 {
+			unauthorizedBasic(c)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func unauthorizedBasic(c *gin.Context) {
+	c.Header("WWW-Authenticate", "Basic realm=\"restricted\"")
+	c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	c.Abort()
+}
+
+func requireJWTAuth(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
 		const prefix = "Bearer "
-		if !strings.HasPrefix(header, prefix) || header[len(prefix):] != token {
+		if !strings.HasPrefix(header, prefix) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			c.Abort()
 			return
 		}
+
+		tokenStr := header[len(prefix):]
+		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+				return nil, errors.New("unexpected signing method")
+			}
+			return []byte(secret), nil
+		})
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			c.Abort()
+			return
+		}
+
 		c.Next()
 	}
 }

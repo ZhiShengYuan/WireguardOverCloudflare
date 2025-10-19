@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/example/wireguard-gateway/internal/peers"
@@ -50,6 +51,7 @@ func TestCreatePeerIPv6Forbidden(t *testing.T) {
 	store := peers.NewStore()
 	mgr := &stubManager{}
 
+	const jwtSecret = "test-secret"
 	srv, err := New(Options{
 		ListenAddr:             "",
 		Interface:              "wg0",
@@ -58,13 +60,23 @@ func TestCreatePeerIPv6Forbidden(t *testing.T) {
 		PeerStore:              store,
 		Manager:                mgr,
 		TrustProxyLoopbackOnly: true,
+		BasicAuthUsername:      "user",
+		BasicAuthPassword:      "pass",
+		JWTSecret:              jwtSecret,
 	})
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
 
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "test"})
+	signed, err := token.SignedString([]byte(jwtSecret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
 	req := httptest.NewRequest(http.MethodPost, "/peer", nil)
 	req.RemoteAddr = "[2001:db8::1]:12345"
+	req.Header.Set("Authorization", "Bearer "+signed)
 	rr := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rr, req)
