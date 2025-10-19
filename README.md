@@ -7,25 +7,41 @@ This service provides an HTTP API that creates and manages WireGuard peers on de
 - `POST /peer`: create a peer for the caller's IPv4 address, rendering the response from a JSON template.
 - `DELETE /peer/:id`: remove a peer by its identifier.
 - `GET /healthz`: health probe endpoint.
-- Optional bearer token authentication for mutating endpoints.
+- JWT authentication for peer creation and HTTP basic auth for administrative endpoints.
 - IPv6 requests are rejected with HTTP 403.
 - Peers are garbage-collected if they never connect within 10 minutes or have not handshaked for 24 hours.
 - Template reload endpoint: `POST /admin/reload-template` (requires auth if configured).
 
 ## Configuration
 
-Environment variables (defaults in parentheses):
+The gateway is configured through a JSON file. Use the `--config` flag to point the server to a configuration file (defaults to `config.json`).
 
-| Variable | Description |
-| --- | --- |
-| `LISTEN_ADDR` (`:8080`) | HTTP listen address. |
-| `WG_INTERFACE` | WireGuard interface name (required). |
-| `WG_ENDPOINT` | Public endpoint for the WireGuard server (required). |
-| `PERSISTENT_KEEPALIVE_SECONDS` (`0`) | Persistent keepalive interval (0 disables). |
-| `JSON_TEMPLATE_PATH` | Path to the JSON response template (required). |
-| `AUTH_BEARER_TOKEN` | Optional bearer token required for POST/DELETE endpoints if set. |
-| `TRUST_PROXY_LOOPBACK_ONLY` (`true`) | When true, trust `X-Forwarded-For` only from loopback proxies. |
-| `USE_PRESHARED_KEY` (`false`) | Generate a preshared key for peers when true. |
+```json
+{
+  "listen_addr": ":8080",
+  "wg_interface": "wg0",
+  "wg_endpoint": "vpn.example.com:51820",
+  "persistent_keepalive_seconds": 0,
+  "json_template_path": "./templates/peer_response.json.tmpl",
+  "trust_proxy_loopback_only": true,
+  "log_level": "info",
+  "use_preshared_key": false,
+  "auth": {
+    "basic": {
+      "username": "admin",
+      "password": "changeme"
+    },
+    "jwt": {
+      "secret": "replace-with-strong-secret"
+    }
+  }
+}
+```
+
+### Authentication
+
+- `POST /peer` requires a JWT signed with the configured secret using the HS256 algorithm and provided via the `Authorization: Bearer <token>` header.
+- `GET /healthz`, `DELETE /peer/:id`, and `POST /admin/reload-template` require HTTP basic authentication using the configured credentials.
 
 ## Running
 
@@ -51,10 +67,6 @@ A sample template is provided at `templates/peer_response.json.tmpl`. Customize 
 ## Example
 
 ```bash
-export WG_INTERFACE=wg0
-export WG_ENDPOINT=vpn.example.com:51820
-export JSON_TEMPLATE_PATH=./templates/peer_response.json.tmpl
-
-curl -X POST http://127.0.0.1:8080/peer
+curl -H "Authorization: Bearer <jwt>" -X POST http://127.0.0.1:8080/peer
 ```
 
